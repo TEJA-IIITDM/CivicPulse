@@ -16,3 +16,11 @@ export type Project = {
   deadline: string;
   description: string;
 };
+
+export type CitizenReport = {
+  id: string;
+  road: string;
+  category: string;
+  description: string;
+  submittedAt: string;
+};
