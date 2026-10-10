@@ -11,7 +11,7 @@ type ProjectCardProps = {
 
 export default function ProjectCard({ project, hasConflict = false, onConflictClick }: ProjectCardProps) {
   return (
-    <article className="relative flex flex-col justify-between rounded-xl border border-slate-200 bg-white p-5 shadow-sm transition-all hover:shadow-md hover:border-slate-300">
+    <article className="relative flex flex-col justify-between rounded-xl border border-slate-200 bg-white p-4 shadow-sm transition-shadow hover:shadow-md hover:border-slate-300">
       {hasConflict && (
         <div className="mb-3 flex items-center justify-between rounded-lg bg-amber-50 px-3 py-1.5 border border-amber-200">
           <div className="flex items-center gap-1.5 text-xs font-semibold text-amber-900">
@@ -42,7 +42,7 @@ export default function ProjectCard({ project, hasConflict = false, onConflictCl
                 </span>
               )}
             </div>
-            <h3 className="text-base font-bold text-slate-900 leading-snug">
+            <h3 className="text-base font-semibold leading-snug text-slate-900">
               {project.name}
             </h3>
             <p className="mt-1 flex items-center gap-1 text-xs text-slate-500 font-medium">

@@ -31,7 +31,7 @@ export default function LocationMapView({
   return (
     <div className="space-y-6">
       {/* Top Banner explaining the location view */}
-      <div className="rounded-xl border border-blue-200 bg-blue-50/50 p-4 flex flex-col md:flex-row items-start md:items-center justify-between gap-3">
+      <div className="flex flex-col gap-4 rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:flex-row md:items-center md:justify-between">
         <div className="flex items-center gap-3">
           <div className="rounded-lg bg-blue-900 p-2 text-white">
             <PinIcon className="w-5 h-5" />
@@ -90,7 +90,7 @@ export default function LocationMapView({
             </div>
 
             {/* Vector Schematic Map View */}
-            <div className="relative rounded-xl border border-slate-200 bg-slate-900 p-4 overflow-hidden min-h-[340px] flex flex-col justify-between">
+            <div className="relative flex min-h-[340px] flex-col justify-between overflow-hidden rounded-xl border border-slate-700 bg-slate-800 p-4 shadow-inner">
               {/* Background Map Grid Pattern */}
               <div
                 className="absolute inset-0 opacity-15"
@@ -166,7 +166,7 @@ export default function LocationMapView({
               <div className="relative z-10 mt-3 pt-2 border-t border-slate-700/60 flex items-center justify-between text-[11px] text-slate-300">
                 <span className="flex items-center gap-1.5">
                   <span className="w-2 h-2 rounded-full bg-emerald-400" />
-                  <span>Telemetry Live</span>
+                  <span>Corridor data loaded</span>
                 </span>
                 <span className="text-slate-400">
                   Selected Corridor: <strong className="text-white">{selectedRoad}</strong>

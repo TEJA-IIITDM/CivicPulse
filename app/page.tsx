@@ -1,5 +1,6 @@
 "use client";
 
+import OfficialLogin from "@/components/OfficialLogin";
 import React, { useEffect,useState, useMemo } from "react";
 import Sidebar, { NavTab } from "@/components/Sidebar";
 import Header from "@/components/Header";
@@ -30,6 +31,7 @@ import {
 import type { Project, Complaint, ComplaintStatus, ProjectStatus, ProjectCategory } from "@/lib/types";
 import { initialProjects, initialComplaints, sampleWards } from "@/lib/mockData";
 import { detectProjectConflicts } from "@/lib/conflictDetector";
+import { supabase } from "@/lib/supabase";
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState<NavTab>("dashboard");
@@ -39,24 +41,62 @@ export default function Home() {
   
   // Restore saved data when the page loads.
   useEffect(() => {
-    try {
-      const savedProjects = localStorage.getItem("civicpulse-projects");
-      const savedComplaints = localStorage.getItem("civicpulse-complaints");
-      console.log("Saved complaints found:", savedComplaints);
+  let cancelled = false;
 
-      if (savedProjects) {
-        setProjects(JSON.parse(savedProjects) as Project[]);
+  async function loadData() {
+    try {
+      const [projectResult, complaintResult] = await Promise.all([
+        supabase.from("projects").select("*"),
+        supabase.from("complaints").select("*").order("createdAt", {
+          ascending: false,
+        }),
+      ]);
+
+      if (projectResult.error) throw projectResult.error;
+      if (complaintResult.error) throw complaintResult.error;
+
+      if (cancelled) return;
+
+      if (projectResult.data?.length) {
+        setProjects(projectResult.data as Project[]);
+      } else {
+        const saved = localStorage.getItem("civicpulse-projects");
+        setProjects(saved ? (JSON.parse(saved) as Project[]) : initialProjects);
       }
 
-      if (savedComplaints) {
-        setComplaints(JSON.parse(savedComplaints) as Complaint[]);
+      if (complaintResult.data?.length) {
+        setComplaints(complaintResult.data as Complaint[]);
+      } else {
+        const saved = localStorage.getItem("civicpulse-complaints");
+        setComplaints(
+          saved ? (JSON.parse(saved) as Complaint[]) : initialComplaints
+        );
       }
     } catch (error) {
-      console.error("Could not restore CivicPulse data:", error);
+      console.error("Supabase load failed:", JSON.stringify(error, null, 2));
+
+      if (!cancelled) {
+        try {
+          const savedProjects = localStorage.getItem("civicpulse-projects");
+          const savedComplaints = localStorage.getItem("civicpulse-complaints");
+
+          if (savedProjects) setProjects(JSON.parse(savedProjects));
+          if (savedComplaints) setComplaints(JSON.parse(savedComplaints));
+        } catch (localError) {
+          console.error("Could not restore local data:", localError);
+        }
+      }
     } finally {
-      setStorageLoaded(true);
+      if (!cancelled) setStorageLoaded(true);
     }
-  }, []);
+  }
+
+  loadData();
+
+  return () => {
+    cancelled = true;
+  };
+}, []);
 
   // Save data whenever projects or complaints change.
   useEffect(() => {
@@ -79,6 +119,7 @@ export default function Home() {
   const [projectSearch, setProjectSearch] = useState("");
   const [projectStatusFilter, setProjectStatusFilter] = useState<string>("ALL");
   const [projectCategoryFilter, setProjectCategoryFilter] = useState<string>("ALL");
+  const [projectSort, setProjectSort] = useState("deadline");
 
   // Add Project Modal state
   const [isAddProjectOpen, setIsAddProjectOpen] = useState(false);
@@ -90,6 +131,7 @@ export default function Home() {
   const [newProjStartDate, setNewProjStartDate] = useState("2026-11-01");
   const [newProjDeadline, setNewProjDeadline] = useState("2026-12-01");
   const [newProjDesc, setNewProjDesc] = useState("");
+  const [newProjProgress, setNewProjProgress] = useState(0);
 
   // KPI Calculations
   const totalProjects = projects.length;
@@ -97,62 +139,172 @@ export default function Home() {
   const delayedProjects = projects.filter((p) => p.status === "Delayed").length;
   const resolvedComplaints = complaints.filter((c) => c.status === "Resolved").length;
   const totalComplaints = complaints.length;
+  
+const [today, setToday] = useState<string | null>(null);
+
+useEffect(() => {
+  const now = new Date();
+  setToday(
+    `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`
+  );
+}, []);
+
+const deadlineProjects = today
+  ? projects
+      .filter((project) => project.status !== "Completed")
+      .map((project) => {
+        const daysRemaining = Math.round(
+          (new Date(`${project.deadline}T00:00:00`).getTime() -
+            new Date(`${today}T00:00:00`).getTime()) /
+            (1000 * 60 * 60 * 24)
+        );
+
+        return { ...project, daysRemaining };
+      })
+      .filter((project) => Number.isFinite(project.daysRemaining))
+  : [];
+
+const overdueProjects = deadlineProjects.filter(
+  (project) => project.daysRemaining < 0
+);
+
+const upcomingDeadlines = deadlineProjects
+  .filter(
+    (project) =>
+      project.daysRemaining >= 0 && project.daysRemaining <= 14
+  )
+  .sort((a, b) => a.daysRemaining - b.daysRemaining);
+
+const atRiskProjects = deadlineProjects.filter(
+  (project) =>
+    project.daysRemaining < 0 ||
+    (project.daysRemaining <= 7 && project.progress < 100)
+);
+
 
   // Handlers
-  const handleComplaintSubmitted = (newComplaint: Complaint) => {
-    setComplaints((prev) => [newComplaint, ...prev]);
-  };
+  const handleComplaintSubmitted = async (newComplaint: Complaint) => {
+  const { error } = await supabase
+    .from("complaints")
+    .insert(newComplaint);
 
-  const handleUpvoteComplaint = (id: string) => {
+  if (error) {
+    console.error("Complaint submission failed:", error);
+    alert(`Could not save complaint: ${error.message}`);
+    return;
+  }
+
+  setComplaints((prev) => [newComplaint, ...prev]);
+};
+
+const handleUpvoteComplaint = async (id: string) => {
+  const { error } = await supabase.rpc("upvote_complaint", {
+    complaint_id: id,
+  });
+
+  if (error) {
+    console.error("Upvote failed:", error);
+    alert(`Could not upvote complaint: ${error.message}`);
+    return;
+  }
+
+  setComplaints((prev) =>
+    prev.map((c) => (c.id === id ? { ...c, upvotes: c.upvotes + 1 } : c))
+  );
+};
+
+const handleComplaintStatusChange = async (
+  id: string,
+  newStatus: ComplaintStatus
+) => {
+  const previous = complaints.find((c) => c.id === id);
+  if (!previous) return;
+
+  setComplaints((prev) =>
+    prev.map((c) => (c.id === id ? { ...c, status: newStatus } : c))
+  );
+
+  const { error } = await supabase
+    .from("complaints")
+    .update({ status: newStatus })
+    .eq("id", id);
+
+  if (error) {
     setComplaints((prev) =>
-      prev.map((c) => (c.id === id ? { ...c, upvotes: c.upvotes + 1 } : c))
+      prev.map((c) => (c.id === id ? previous : c))
     );
+    console.error("Status update failed:", error);
+    alert(`Could not update status. Official access may be required: ${error.message}`);
+  }
+};
+
+const handleCreateProject = async (e: React.FormEvent) => {
+  e.preventDefault();
+  if (!newProjName.trim()) return;
+
+  const newProject: Project = {
+    id: `proj-${Date.now()}`,
+    name: newProjName.trim(),
+    road: newProjRoad,
+    ward: "Ward 14 - Central Metro",
+    department: newProjDept,
+    category: newProjCategory,
+    status: newProjStatus,
+    progress: newProjStatus === "Completed" ? 100 : newProjProgress,
+    startDate: newProjStartDate,
+    deadline: newProjDeadline,
+    description:
+      newProjDesc.trim() || `Infrastructure civil works on ${newProjRoad}.`,
+    contractor: "Pending Assignment",
+    budget: "$350,000",
+    impactLevel: "Moderate",
   };
 
-  const handleComplaintStatusChange = (id: string, newStatus: ComplaintStatus) => {
-    setComplaints((prev) =>
-      prev.map((c) => (c.id === id ? { ...c, status: newStatus } : c))
+  const { error } = await supabase.from("projects").insert(newProject);
+
+  if (error) {
+    console.error(
+  "Project creation failed:",
+  JSON.stringify(error, Object.getOwnPropertyNames(error), 2)
+);
+    alert(
+      `Could not save project. Official access may be required: ${error.message}`
     );
-  };
+    return;
+  }
 
-  const handleCreateProject = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newProjName.trim()) return;
-
-    const newProject: Project = {
-      id: `proj-${Date.now()}`,
-      name: newProjName.trim(),
-      road: newProjRoad,
-      ward: "Ward 14 - Central Metro",
-      department: newProjDept,
-      category: newProjCategory,
-      status: newProjStatus,
-      progress: newProjStatus === "In Progress" ? 25 : 0,
-      startDate: newProjStartDate,
-      deadline: newProjDeadline,
-      description: newProjDesc.trim() || `Infrastructure civil works on ${newProjRoad}.`,
-      contractor: "Pending Assignment",
-      budget: "$350,000",
-      impactLevel: "Moderate",
-    };
-
-    setProjects((prev) => [newProject, ...prev]);
-    setIsAddProjectOpen(false);
-    setNewProjName("");
-    setNewProjDesc("");
-  };
-
+  setProjects((prev) => [newProject, ...prev]);
+  setIsAddProjectOpen(false);
+  setNewProjName("");
+  setNewProjDesc("");
+};
   // Filtered projects for the Projects tab
-  const filteredProjects = projects.filter((p) => {
+  const filteredProjects = projects
+  .filter((p) => {
+    const query = projectSearch.toLowerCase();
+
     const matchesSearch =
-      p.name.toLowerCase().includes(projectSearch.toLowerCase()) ||
-      p.road.toLowerCase().includes(projectSearch.toLowerCase()) ||
-      p.department.toLowerCase().includes(projectSearch.toLowerCase());
+      p.name.toLowerCase().includes(query) ||
+      p.road.toLowerCase().includes(query) ||
+      p.department.toLowerCase().includes(query) ||
+      p.ward.toLowerCase().includes(query);
 
-    const matchesStatus = projectStatusFilter === "ALL" || p.status === projectStatusFilter;
-    const matchesCat = projectCategoryFilter === "ALL" || p.category === projectCategoryFilter;
+    const matchesStatus =
+      projectStatusFilter === "ALL" || p.status === projectStatusFilter;
 
-    return matchesSearch && matchesStatus && matchesCat;
+    const matchesCategory =
+      projectCategoryFilter === "ALL" || p.category === projectCategoryFilter;
+
+    return matchesSearch && matchesStatus && matchesCategory;
+  })
+  .sort((a, b) => {
+    if (projectSort === "deadline") {
+      return a.deadline.localeCompare(b.deadline);
+    }
+    if (projectSort === "name") {
+      return a.name.localeCompare(b.name);
+    }
+    return b.progress - a.progress;
   });
 
   return (
@@ -176,16 +328,40 @@ export default function Home() {
         />
 
         {/* Tab Body */}
-        <main className="flex-1 p-6 max-w-7xl w-full mx-auto space-y-6">
+        <main className="flex-1 p-6 pt-8 max-w-7xl w-full mx-auto space-y-6">
           {/* ============================================================== */}
           {/* TAB 1: EXECUTIVE DASHBOARD */}
           {/* ============================================================== */}
           {activeTab === "dashboard" && (
             <div className="space-y-6">
+              
+<div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+  <div>
+    <p className="text-xs font-semibold uppercase tracking-[0.16em] text-teal-700">
+      CIVIC INFRASTRUCTURE OVERVIEW
+    </p>
+    <h1 className="mt-1 text-xl font-semibold tracking-tight text-slate-900 sm:text-2xl">
+      Operations dashboard
+    </h1>
+    <p className="mt-1 text-sm text-slate-500">
+      Monitor projects, deadlines, roadwork conflicts, and citizen reports.
+    </p>
+  </div>
+
+  <button
+    onClick={() => setActiveTab("projects")}
+    className="inline-flex items-center justify-center gap-2 rounded-xl bg-[#142D4E] px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-[#1E4169]"
+  >
+    <PlusIcon className="h-4 w-4" />
+    View projects
+  </button>
+</div>
+
+
               {/* Feature 1: KPI Summary Cards */}
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
                 {/* Total Projects */}
-                <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-2xs">
+                <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-2xs">
                   <div className="flex items-center justify-between">
                     <span className="text-xs font-bold uppercase tracking-wider text-slate-400">
                       Total Infrastructure Works
@@ -208,7 +384,7 @@ export default function Home() {
                 </div>
 
                 {/* Ongoing Projects */}
-                <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-2xs">
+                <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-2xs">
                   <div className="flex items-center justify-between">
                     <span className="text-xs font-bold uppercase tracking-wider text-slate-400">
                       Ongoing Civil Works
@@ -231,7 +407,7 @@ export default function Home() {
                 </div>
 
                 {/* Delayed Projects */}
-                <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-2xs">
+                <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-2xs">
                   <div className="flex items-center justify-between">
                     <span className="text-xs font-bold uppercase tracking-wider text-slate-400">
                       Delayed Projects
@@ -254,7 +430,7 @@ export default function Home() {
                 </div>
 
                 {/* Resolved Complaints */}
-                <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-2xs">
+                <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-2xs">
                   <div className="flex items-center justify-between">
                     <span className="text-xs font-bold uppercase tracking-wider text-slate-400">
                       Resolved Grievances
@@ -264,7 +440,7 @@ export default function Home() {
                     </div>
                   </div>
                   <div className="mt-3 flex items-baseline gap-2">
-                    <span className="text-3xl font-black text-emerald-700 tracking-tight">
+                    <span className="text-2xl font-bold text-emerald-700 tracking-tight">
                       {resolvedComplaints}
                     </span>
                     <span className="text-xs font-medium text-slate-500">
@@ -277,6 +453,87 @@ export default function Home() {
                 </div>
               </div>
 
+{/* Smart deadline overview */}
+<div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+  <div className="rounded-2xl border border-amber-200 bg-white p-5 shadow-sm">
+    <div className="flex items-start justify-between gap-3">
+      <div>
+        <p className="text-sm font-semibold text-slate-800">
+          Approaching deadlines
+        </p>
+        <p className="mt-1 text-sm text-slate-500">
+          Active projects due within the next 14 days
+        </p>
+      </div>
+      <div className="rounded-xl bg-amber-50 p-2.5 text-amber-700">
+        <CalendarIcon className="h-5 w-5" />
+      </div>
+    </div>
+
+    <p className="mt-4 text-3xl font-bold tracking-tight text-slate-900">
+      {upcomingDeadlines.length}
+    </p>
+
+    {upcomingDeadlines.length > 0 ? (
+      <div className="mt-3 space-y-2">
+        {upcomingDeadlines.slice(0, 3).map((project) => (
+          <div
+            key={project.id}
+            className="flex items-center justify-between gap-3 rounded-lg bg-amber-50/70 px-3 py-2"
+          >
+            <div className="min-w-0">
+              <p className="truncate text-sm font-medium text-slate-800">
+                {project.name}
+              </p>
+              <p className="text-xs text-slate-500">{project.road}</p>
+            </div>
+            <span className="shrink-0 text-xs font-semibold text-amber-800">
+              {project.daysRemaining === 0
+                ? "Due today"
+                : `${project.daysRemaining}d left`}
+            </span>
+          </div>
+        ))}
+      </div>
+    ) : (
+      <p className="mt-3 text-sm text-slate-500">
+        No upcoming deadlines in the next 14 days.
+      </p>
+    )}
+  </div>
+
+  <div className="rounded-2xl border border-rose-200 bg-white p-5 shadow-sm">
+    <div className="flex items-start justify-between gap-3">
+      <div>
+        <p className="text-sm font-semibold text-slate-800">
+          Projects requiring attention
+        </p>
+        <p className="mt-1 text-sm text-slate-500">
+          Overdue projects and projects due within 7 days with progress below 100%
+        </p>
+      </div>
+      <div className="rounded-xl bg-rose-50 p-2.5 text-rose-700">
+        <ShieldAlertIcon className="h-5 w-5" />
+      </div>
+    </div>
+
+    <p className="mt-4 text-3xl font-bold tracking-tight text-slate-900">
+      {atRiskProjects.length}
+    </p>
+
+    <div className="mt-3 flex flex-wrap items-center gap-2">
+      <span className="rounded-full bg-rose-50 px-3 py-1 text-xs font-semibold text-rose-700">
+        {overdueProjects.length} overdue
+      </span>
+      <button
+        onClick={() => setActiveTab("projects")}
+        className="rounded-lg px-3 py-1.5 text-xs font-semibold text-teal-800 transition hover:bg-teal-50"
+      >
+        Review projects →
+      </button>
+    </div>
+  </div>
+</div>
               {/* Feature 3: Highlight Conflict Warning Banner */}
               {conflicts.length > 0 && (
                 <div className="rounded-xl border border-rose-300 bg-gradient-to-r from-rose-50 via-amber-50 to-white p-5 shadow-sm">
@@ -294,12 +551,16 @@ export default function Home() {
                             {conflicts.length} Road Clashes Detected
                           </span>
                         </div>
-                        <h3 className="mt-1 text-base font-bold text-slate-900">
-                          Overlapping Civil Works Threaten New Pavement on MG Road & Outer Ring Road
-                        </h3>
-                        <p className="mt-0.5 text-xs text-slate-600 max-w-3xl leading-relaxed">
-                          Multiple departments (PWD, Water Board, Telecom) have uncoordinated excavation windows on the same corridors. Review conflicts to adjust start dates and prevent duplicate road-cutting.
-                        </p>
+                        <h3 className="mt-1 text-base font-semibold text-slate-900">
+  {conflicts.length === 1
+    ? `Conflict detected on ${conflicts[0].road}`
+    : `${conflicts.length} potential roadwork conflicts detected`}
+</h3>
+                        <p className="mt-1 max-w-3xl text-sm leading-relaxed text-slate-600">
+  Review overlapping work schedules across{" "}
+  {new Set(conflicts.map((conflict) => conflict.road)).size} road corridors.
+  Open conflict detection to review affected projects and suggested actions.
+</p>
                       </div>
                     </div>
 
@@ -484,7 +745,16 @@ export default function Home() {
                     <option value="Delayed">Delayed</option>
                     <option value="Completed">Completed</option>
                   </select>
-
+<select
+  value={projectSort}
+  onChange={(e) => setProjectSort(e.target.value)}
+  aria-label="Sort projects"
+  className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+>
+  <option value="deadline">Deadline: Earliest</option>
+  <option value="name">Name: A–Z</option>
+  <option value="progress">Progress: Highest</option>
+</select>
                   {/* Add Project CTA */}
                   <button
                     onClick={() => setIsAddProjectOpen(true)}
