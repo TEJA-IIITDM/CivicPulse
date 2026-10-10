@@ -1,11 +1,14 @@
 
+
 "use client";
 
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import type { User } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabase";
 
 export default function OfficialLogin() {
+  const router = useRouter();
   const [user, setUser] = useState<User | null>(null);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -16,24 +19,44 @@ export default function OfficialLogin() {
   useEffect(() => {
     let mounted = true;
 
-    supabase.auth.getSession().then(({ data, error }) => {
+    async function checkSession() {
+      const { data, error } = await supabase.auth.getSession();
       if (!mounted) return;
-      if (error) setMessage(error.message);
-      setUser(data.session?.user ?? null);
+
+      if (error) {
+        setMessage(error.message);
+        setErrorMessage(true);
+      }
+
+      const currentUser = data.session?.user ?? null;
+      setUser(currentUser);
       setLoading(false);
-    });
+
+      if (currentUser?.app_metadata?.role === "official") {
+        router.replace("/");
+      }
+    }
+
+    void checkSession();
 
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_event, session) => {
-      setUser(session?.user ?? null);
+      if (!mounted) return;
+
+      const currentUser = session?.user ?? null;
+      setUser(currentUser);
+
+      if (currentUser?.app_metadata?.role === "official") {
+        router.replace("/");
+      }
     });
 
     return () => {
       mounted = false;
       subscription.unsubscribe();
     };
-  }, []);
+  }, [router]);
 
   async function signIn(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -41,26 +64,39 @@ export default function OfficialLogin() {
     setMessage("");
     setErrorMessage(false);
 
-    const { data, error } = await supabase.auth.signInWithPassword({
-      email,
-      password,
-    });
+    try {
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email,
+        password,
+      });
 
-    if (error) {
-      setMessage(error.message);
-      setErrorMessage(true);
-    } else if (data.user?.app_metadata?.role !== "official") {
-      await supabase.auth.signOut();
-      setUser(null);
-      setMessage("This account is not authorized as an official.");
-      setErrorMessage(true);
-    } else {
+      if (error) {
+        setMessage(error.message);
+        setErrorMessage(true);
+        setLoading(false);
+        return;
+      }
+
+      if (data.user?.app_metadata?.role !== "official") {
+        await supabase.auth.signOut();
+        setUser(null);
+        setMessage("This account is not authorized as an official.");
+        setErrorMessage(true);
+        setLoading(false);
+        return;
+      }
+
       setUser(data.user);
       setPassword("");
-      setMessage("Login successful.");
+      setMessage("Login successful. Opening dashboard...");
+      router.replace("/");
+      router.refresh();
+    } catch {
+      setMessage("Unable to sign in. Please try again.");
+      setErrorMessage(true);
+    } finally {
+      setLoading(false);
     }
-
-    setLoading(false);
   }
 
   async function signOut() {
@@ -86,6 +122,9 @@ export default function OfficialLogin() {
         </p>
         <p className="mt-1 break-all text-sm text-slate-700">
           {user.email}
+        </p>
+        <p className="mt-3 text-sm text-emerald-800">
+          Opening dashboard...
         </p>
         <button
           type="button"
