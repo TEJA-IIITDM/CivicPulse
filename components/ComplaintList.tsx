@@ -13,6 +13,7 @@ export default function ComplaintList({ complaints, onUpvote, onStatusChange }: 
   const [search, setSearch] = useState("");
   const [selectedStatus, setSelectedStatus] = useState<string>("ALL");
   const [selectedCategory, setSelectedCategory] = useState<string>("ALL");
+  console.log("ComplaintList received:", complaints.length, complaints.map(c => c.title));
 
   const filtered = complaints.filter((c) => {
     const matchesSearch =

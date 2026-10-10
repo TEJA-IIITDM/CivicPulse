@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useMemo } from "react";
+import React, { useEffect,useState, useMemo } from "react";
 import Sidebar, { NavTab } from "@/components/Sidebar";
 import Header from "@/components/Header";
 import ProjectCard from "@/components/ProjectCard";
@@ -35,6 +35,40 @@ export default function Home() {
   const [activeTab, setActiveTab] = useState<NavTab>("dashboard");
   const [projects, setProjects] = useState<Project[]>(initialProjects);
   const [complaints, setComplaints] = useState<Complaint[]>(initialComplaints);
+  const [storageLoaded, setStorageLoaded] = useState(false);
+  
+  // Restore saved data when the page loads.
+  useEffect(() => {
+    try {
+      const savedProjects = localStorage.getItem("civicpulse-projects");
+      const savedComplaints = localStorage.getItem("civicpulse-complaints");
+      console.log("Saved complaints found:", savedComplaints);
+
+      if (savedProjects) {
+        setProjects(JSON.parse(savedProjects) as Project[]);
+      }
+
+      if (savedComplaints) {
+        setComplaints(JSON.parse(savedComplaints) as Complaint[]);
+      }
+    } catch (error) {
+      console.error("Could not restore CivicPulse data:", error);
+    } finally {
+      setStorageLoaded(true);
+    }
+  }, []);
+
+  // Save data whenever projects or complaints change.
+  useEffect(() => {
+    if (!storageLoaded) return;
+
+    try {
+      localStorage.setItem("civicpulse-projects", JSON.stringify(projects));
+      localStorage.setItem("civicpulse-complaints", JSON.stringify(complaints));
+    } catch (error) {
+      console.error("Could not save CivicPulse data:", error);
+    }
+  }, [storageLoaded, projects, complaints]);
 
   // Dynamic conflict calculation using our automated detector
   const conflicts = useMemo(() => {
@@ -97,6 +131,7 @@ export default function Home() {
       startDate: newProjStartDate,
       deadline: newProjDeadline,
       description: newProjDesc.trim() || `Infrastructure civil works on ${newProjRoad}.`,
+      contractor: "Pending Assignment",
       budget: "$350,000",
       impactLevel: "Moderate",
     };
@@ -303,7 +338,9 @@ export default function Home() {
 
                     <div className="mt-4 space-y-3">
                       {projects.slice(0, 3).map((proj) => {
-                        const hasConflict = conflicts.some((c) => c.road === proj.road);
+                        const hasConflict = conflicts.some(
+  (c) => c.project1.id === proj.id || c.project2.id === proj.id
+);
                         return (
                           <ProjectCard
                             key={proj.id}
@@ -462,7 +499,9 @@ export default function Home() {
               {/* Projects Grid */}
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                 {filteredProjects.map((proj) => {
-                  const hasConflict = conflicts.some((c) => c.road === proj.road);
+                  const hasConflict = conflicts.some(
+  (c) => c.project1.id === proj.id || c.project2.id === proj.id
+);
                   return (
                     <ProjectCard
                       key={proj.id}
